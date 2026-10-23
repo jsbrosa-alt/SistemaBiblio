@@ -1,0 +1,18 @@
+# Python / Back-end
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# React / Front-end
+node_modules/
+dist/
+build/
+
+# Variáveis de Ambiente e Segredos (LGPD / Senhas do Banco)
+.env
+.env.local
+
+# Sistema e Editor
+.DS_Store
+.vscode/
