@@ -6,7 +6,7 @@ services:
     environment:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: senha_segura_local
-      POSTGRES_DB: biblioteca_sm
+      POSTGRES_DB: biblioteca_db
     ports:
       - "5432:5432"
     volumes:

@@ -2,6 +2,7 @@ from pydantic import BaseModel, Field, field_validator
 from typing import Optional, Dict, Any
 
 class ObraCreateSchema(BaseModel):
+    subdivisao_literaria: Optional[str] = Field(default="", description="Dígito opcional de período/subtipo literário (ex: 7 para .87)")
     tipo_acervo: str = "livro" # livro, periodico, quadrinho
     isbn_issn: Optional[str] = None
     titulo: str = Field(..., min_length=1)
