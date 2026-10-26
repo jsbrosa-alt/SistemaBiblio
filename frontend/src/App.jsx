@@ -41,8 +41,6 @@ export default function App() {
   const [ultimoRegistro, setUltimoRegistro] = useState(null);
 
   useEffect(() => {
-    if (!form.titulo.trim() || !form.autor_sobrenome.trim()) return;
-
     const timer = setTimeout(async () => {
       try {
         const params = new URLSearchParams({
@@ -134,6 +132,7 @@ export default function App() {
 
       setForm((prev) => ({
         ...prev,
+        tipo_acervo: data.tipo_acervo || prev.tipo_acervo,
         isbn_issn: isbnLimpo,
         titulo: data.titulo || prev.titulo,
         subtitulo: data.subtitulo ?? prev.subtitulo,
@@ -146,9 +145,20 @@ export default function App() {
         categoria_principal: data.categoria_principal || prev.categoria_principal,
         genero_literario: data.genero_literario || prev.genero_literario,
         origem_autor: data.origem_autor || prev.origem_autor,
-        publico_alvo: data.publico_alvo || prev.publico_alvo,
-        cdd_manual: data.cdd_oficial || "",
+        publico_alvo: data.publico_alvo || "adulto",
+        subdivisao_literaria: data.subdivisao_literaria ?? "",
+        cdd_manual: data.cdd_oficial && data.publico_alvo !== "infantil" ? data.cdd_oficial : "",
       }));
+
+      if (data.cdd_sugerido || data.cutter_sugerido) {
+        const cddPrev = data.cdd_sugerido || "869.93";
+        const cutPrev = data.cutter_sugerido || "---";
+        setPreview({
+          cdd_gerado: cddPrev,
+          cutter_gerado: cutPrev,
+          etiqueta_lombada: `${cddPrev} ${cutPrev}`,
+        });
+      }
 
       if (data.ja_cadastrado) {
         setSysStatus({ state: "ERR", code: "HTTP_409_EXISTS", meta: `ID #${data.obra_id}` });

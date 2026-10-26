@@ -269,7 +269,7 @@ def separar_nome_autor(sobrenome_ou_completo: str, prenome_atual: str = "") -> T
     Destrincha o nome caso o usuário tenha digitado o nome completo num campo só.
     Respeita Filho, Neto, Sobrinho e Júnior junto ao sobrenome.
     """
-    texto = sobrenome_ou_completo.strip()
+    texto = re.sub(r"\s*\([^)]*\)\s*", " ", sobrenome_ou_completo).strip()
     prenome = prenome_atual.strip()
 
     if "," in texto:
@@ -491,114 +491,271 @@ def calcular_cdd_automatico(
     return cdd_base
 
 
-def inferir_classificacao_por_assuntos(assuntos: List[str]) -> dict:
+def _inferir_por_cdd_oficial(cdd_oficial: str, resultado: dict) -> None:
+    """Mapeia um CDD oficial vindo de API (ex: Open Library) para os campos do formulário."""
+    if not cdd_oficial:
+        return
+    cdd = cdd_oficial.strip().upper()
+
+    if cdd.startswith("028.5") or cdd in {"E", "FIC"} or cdd.startswith("J"):
+        resultado.setdefault("publico_alvo", "infantil")
+        return
+
+    if cdd.startswith("741.5"):
+        resultado.setdefault("categoria_principal", "quadrinhos_mangas")
+        resultado.setdefault("tipo_acervo", "quadrinho")
+        return
+
+    # Verifica correspondência exata ou por prefixo com MAPA_TEMAS_CDD
+    for cat, codigo in sorted(MAPA_TEMAS_CDD.items(), key=lambda x: len(x[1]), reverse=True):
+        if cdd == codigo or cdd.startswith(codigo + "."):
+            resultado.setdefault("categoria_principal", cat)
+            return
+
+    prefixos_temas = [
+        ("004", "computacao"), ("005", "programacao"), ("006", "programacao"),
+        ("03", "enciclopedia"), ("07", "jornalismo"),
+        ("133.9", "espiritismo"), ("158", "autoajuda"), ("15", "psicologia"),
+        ("17", "etica"), ("1", "filosofia"),
+        ("23", "teologia_crista"), ("24", "teologia_crista"), ("2", "religiao"),
+        ("30", "sociologia"), ("32", "politica"), ("33", "economia"),
+        ("34", "direito"), ("35", "administracao_publica"), ("37", "educacao"),
+        ("398", "folclore"), ("41", "linguistica"), ("42", "lingua_inglesa"),
+        ("469", "lingua_portuguesa"), ("51", "matematica"), ("52", "astronomia"),
+        ("53", "fisica"), ("54", "quimica"), ("57", "biologia"),
+        ("58", "botanica"), ("59", "zoologia"), ("5", "ciencias"),
+        ("61", "medicina_saude"), ("62", "engenharia"), ("63", "agricultura"),
+        ("641", "culinaria"), ("65", "administracao_empresas"),
+        ("72", "arquitetura"), ("78", "musica"), ("791", "cinema_teatro"),
+        ("792", "cinema_teatro"), ("796", "esportes"), ("7", "artes"),
+        ("918.1", "geografia_brasil"), ("91", "geografia_viagens"),
+        ("92", "biografia"), ("93", "historia_antiga"), ("94", "historia_europa"),
+        ("981.65", "historia_rs"), ("981", "historia_brasil"), ("90", "historia_geral"),
+    ]
+    for pref, cat in prefixos_temas:
+        if cdd.startswith(pref):
+            resultado.setdefault("categoria_principal", cat)
+            return
+
+    # Classe 800 (Literatura)
+    cdd_num = cdd.lstrip("B")
+    if cdd_num.startswith("8"):
+        resultado.setdefault("categoria_principal", "literatura")
+        if cdd.startswith("B869") or cdd_num.startswith("869.9"):
+            resultado.setdefault("origem_autor", "brasileira")
+        else:
+            for orig, raiz in sorted(RAIZ_LITERATURA_ORIGEM.items(), key=lambda x: len(x[1]), reverse=True):
+                if cdd_num.startswith(raiz):
+                    resultado.setdefault("origem_autor", orig)
+                    break
+
+
+def inferir_classificacao_por_assuntos(assuntos: List[str], cdd_oficial: Optional[str] = None) -> dict:
     texto_limpo = " | ".join(limpar_texto(a).lower() for a in assuntos if a)
-    resultado = {}
+    resultado: Dict[str, str] = {}
 
-    if any(k in texto_limpo for k in ["miscelanea", "miscellany", "fragmentos", "aforismos", "diarios", "diaries", "prosa poetica", "obras completas", "textos diversos", "desassossego"]):
-        resultado["categoria_principal"] = "literatura"
-        resultado["genero_literario"] = "miscelanea"
-    elif any(k in texto_limpo for k in ["critica literaria", "historia e critica", "history and criticism", "teoria literaria"]):
-        resultado["categoria_principal"] = "literatura"
-        resultado["genero_literario"] = "historia_critica"
-    elif any(k in texto_limpo for k in ["antologia", "anthology", "coletanea"]):
-        resultado["categoria_principal"] = "literatura"
-        resultado["genero_literario"] = "antologia_colecao"
-    elif any(k in texto_limpo for k in ["poesia", "poemas", "poetica", "poetry", "poems", "lirica"]):
-        resultado["categoria_principal"] = "literatura"
-        resultado["genero_literario"] = "poesia"
-    elif any(k in texto_limpo for k in ["cronica", "cronicas", "ensaio", "ensaios", "essays"]):
-        resultado["categoria_principal"] = "literatura"
-        resultado["genero_literario"] = "cronica_ensaio"
-    elif any(k in texto_limpo for k in ["teatro", "drama", "peca teatral", "tragedia", "comedia teatral"]):
-        resultado["categoria_principal"] = "literatura"
-        resultado["genero_literario"] = "teatro_drama"
-    elif any(k in texto_limpo for k in ["conto", "contos", "short stories", "novela", "novelas"]):
-        resultado["categoria_principal"] = "literatura"
-        resultado["genero_literario"] = "conto_novela"
-    elif any(k in texto_limpo for k in ["humor", "satira", "piadas", "humorous"]):
-        resultado["categoria_principal"] = "literatura"
-        resultado["genero_literario"] = "humor_satira"
-    elif any(k in texto_limpo for k in ["cartas", "correspondencia", "epistolar", "letters"]):
-        resultado["categoria_principal"] = "literatura"
-        resultado["genero_literario"] = "cartas"
-    elif any(k in texto_limpo for k in ["discurso", "discursos", "oratoria", "speeches"]):
-        resultado["categoria_principal"] = "literatura"
-        resultado["genero_literario"] = "discursos"
-    elif any(k in texto_limpo for k in ["ficcao", "fiction", "romance", "literatura", "literature"]):
-        resultado["categoria_principal"] = "literatura"
-        resultado["genero_literario"] = "romance_ficcao"
+    # 1. Detecção automática de Público-Alvo (Adulto vs Infantojuvenil 028.5)
+    palavras_infantojuvenil = [
+        "infantojuvenil", "infanto juvenil", "literatura infantil", "literatura juvenil",
+        "infantil", "juvenil", "juvenile", "children", "childrens", "young adult",
+        "ya fiction", "kids", "contos de fadas", "fairy tales", "fairy tale",
+        "fabulas", "fables", "picture book", "livros ilustrados", "livro ilustrado",
+        "bedtime", "para criancas", "para jovens", "leitura infantil", "ensino fundamental",
+        "historias infantis", "poesia infantil", "teatro infantil",
+    ]
+    if any(k in texto_limpo for k in palavras_infantojuvenil):
+        resultado["publico_alvo"] = "infantil"
 
+    # 2. Detecção de Quadrinhos / Mangás / Graphic Novels (741.5)
+    palavras_quadrinhos = [
+        "quadrinhos", "historias em quadrinhos", "historia em quadrinhos",
+        "comics", "comic books", "graphic novel", "graphic novels",
+        "manga", "mangas", "bande dessinee", "hq", "tirinhas", "gibis",
+    ]
+    if any(k in texto_limpo for k in palavras_quadrinhos):
+        resultado["categoria_principal"] = "quadrinhos_mangas"
+        resultado["tipo_acervo"] = "quadrinho"
+
+    # 3. Identificação de Origem Literária / Nacionalidade do Autor
     mapa_origens = [
         (["brasileir", "brazil", "brasil"], "brasileira"),
-        (["angola", "mocambic", "cabo verde"], "angolana_mocambicana"),
+        (["angola", "mocambic", "cabo verde", "guine bissau", "sao tome"], "angolana_mocambicana"),
         (["portugues", "portugal", "lusitan", "fernando pessoa", "saramago", "camoes", "eca de queiros"], "portuguesa"),
-        (["latinoamerican", "hispanoamerican", "latin american", "argentin", "chilena", "uruguaia", "colombian", "mexican", "peruana"], "latino_americana"),
-        (["espanhol", "spanish", "espanha"], "espanhola"),
-        (["canadense", "canadian"], "canadense"),
-        (["american", "estados unidos", "united states", "norteamerican"], "americana"),
-        (["ingles", "english", "british", "britanic", "uk", "irlandes", "escoces"], "inglesa"),
-        (["nordic", "escandinav", "suec", "norueg", "dinamarq"], "nordica_escandinava"),
-        (["alema", "german", "alemanha", "austriac"], "alema"),
-        (["frances", "french", "franca"], "francesa"),
-        (["italian", "italia"], "italiana"),
-        (["latina", "romana", "ovidio", "virgilio", "cicero", "seneca"], "classica_latina"),
-        (["grega", "grego", "greek", "homero", "sofocles", "euripides"], "classica_grega"),
-        (["russa", "russo", "russian", "eslav", "sovietic"], "russa_eslava"),
-        (["polones", "polish", "tchec", "czech"], "polonesa_tcheca"),
-        (["hebraic", "hebrew", "judaic", "israel"], "hebraica_judaica"),
-        (["arabe", "arabic", "persa"], "arabe"),
-        (["chines", "chinese"], "chinesa"),
-        (["japones", "japanese"], "japonesa"),
-        (["african"], "africana"),
+        (["latinoamerican", "hispanoamerican", "latin american", "argentin", "chilena", "uruguaia", "colombian", "mexican", "peruana", "venezuelan", "cuban"], "latino_americana"),
+        (["espanhol", "spanish", "espanha", "spain"], "espanhola"),
+        (["canadense", "canadian", "canada"], "canadense"),
+        (["american", "estados unidos", "united states", "norteamerican", "usa"], "americana"),
+        (["ingles", "english", "british", "britanic", "uk", "irlandes", "irish", "escoces", "scottish", "australian"], "inglesa"),
+        (["nordic", "escandinav", "scandinavian", "suec", "swedish", "norueg", "norwegian", "dinamarq", "danish", "islandes"], "nordica_escandinava"),
+        (["alema", "german", "alemanha", "germany", "austriac", "austrian", "suic"], "alema"),
+        (["frances", "french", "franca", "france", "belga", "belgian"], "francesa"),
+        (["italian", "italia", "italy"], "italiana"),
+        (["latina", "romana", "latin literature", "ovidio", "virgilio", "cicero", "seneca", "horacio"], "classica_latina"),
+        (["grega", "grego", "greek", "homero", "sofocles", "euripides", "esquilo", "aristofanes"], "classica_grega"),
+        (["russa", "russo", "russian", "eslav", "slavic", "sovietic", "ucranian"], "russa_eslava"),
+        (["polones", "polish", "polonia", "tchec", "czech", "bohemia"], "polonesa_tcheca"),
+        (["hebraic", "hebrew", "judaic", "jewish", "israel", "iidiche", "yiddish"], "hebraica_judaica"),
+        (["arabe", "arabic", "persa", "persian", "islamic", "oriente medio"], "arabe"),
+        (["chines", "chinese", "china"], "chinesa"),
+        (["japones", "japanese", "japao", "japan"], "japonesa"),
+        (["african", "nigeria", "senegal", "queniano", "sul african"], "africana"),
     ]
     for palavras_origem, chave_origem in mapa_origens:
         if any(p in texto_limpo for p in palavras_origem):
             resultado["origem_autor"] = chave_origem
             break
 
+    # 4. Detecção de Formas Literárias Explícitas (Tabela 3 CDD)
+    marcadores_ficcao_explicita = [
+        "ficcao", "fiction", "romance", "romances", "novel", "novels",
+        "fantasia", "fantasy", "science fiction", "ficcao cientifica",
+        "distopia", "dystopian", "thriller", "suspense", "policial",
+        "detective", "mystery", "terror", "horror", "aventura", "adventure",
+        "conto", "contos", "short stories", "novela", "novelas",
+        "poesia", "poemas", "poetica", "poetry", "poems", "lirica", "sonetos",
+        "teatro", "drama", "peca teatral", "tragedia", "comedia teatral", "plays",
+        "cronica", "cronicas", "antologia", "anthology", "coletanea",
+        "critica literaria", "historia e critica", "history and criticism", "teoria literaria",
+        "miscelanea", "miscellany", "fragmentos", "aforismos", "prosa poetica", "desassossego",
+    ]
+    eh_literatura_explicita = any(k in texto_limpo for k in marcadores_ficcao_explicita)
+
+    # Remove termos compostos de ficção (ex: "science fiction", "historical fiction", "psychological fiction")
+    # ao avaliar temas de Não-Ficção para evitar falsos positivos
+    texto_nao_ficcao = texto_limpo
+    for composto_ficcao in [
+        "science fiction", "ficcao cientifica", "historical fiction", "ficcao historica",
+        "psychological fiction", "ficcao psicologica", "political fiction", "ficcao politica",
+        "religious fiction", "ficcao religiosa", "christian fiction", "ficcao crista",
+        "biographical fiction", "ficcao biografica", "legal fiction", "legal stories",
+        "medical fiction", "domestic fiction", "war stories", "love stories",
+    ]:
+        texto_nao_ficcao = texto_nao_ficcao.replace(composto_ficcao, " romance_ficcao ")
+
+    # 5. Mapeamento completo de todas as Classes Temáticas de Não-Ficção (MAPA_TEMAS_CDD)
     if "categoria_principal" not in resultado:
         mapa_temas = [
-            (["quadrinhos", "comics", "graphic novel", "manga", "hq"], "quadrinhos_mangas"),
-            (["biografia", "biography", "memorias", "autobiografia"], "biografia"),
-            (["rio grande do sul", "gauch", "farroupilha", "serra gaucha"], "historia_rs"),
-            (["historia do brasil", "brazil history"], "historia_brasil"),
-            (["historia antiga", "ancient history", "egito antigo", "mesopotamia"], "historia_antiga"),
-            (["historia da europa", "european history", "guerra mundial"], "historia_europa"),
-            (["historia", "history"], "historia_geral"),
-            (["autoajuda", "selfhelp", "desenvolvimento pessoal"], "autoajuda"),
-            (["psicologia", "psychology", "psicanalise"], "psicologia"),
-            (["etica", "ethics", "moral"], "etica"),
-            (["filosofia", "philosophy"], "filosofia"),
-            (["espiritismo", "kardec", "espirita"], "espiritismo"),
-            (["teologia", "biblia", "cristianismo"], "teologia_crista"),
-            (["religiao", "religion", "mitologia"], "religiao"),
-            (["direito", "law", "legislacao", "juridic"], "direito"),
-            (["economia", "economics", "financas"], "economia"),
-            (["politica", "ciencia politica", "politics"], "politica"),
-            (["sociologia", "sociology", "ciencias sociais"], "sociologia"),
-            (["educacao", "pedagogia", "education", "ensino"], "educacao"),
-            (["folclore", "folklore", "lendas"], "folclore"),
-            (["programacao", "programming", "python", "javascript", "software"], "programacao"),
-            (["computacao", "informatica", "computers", "hardware"], "computacao"),
-            (["matematica", "mathematics", "calculo", "algebra"], "matematica"),
-            (["fisica", "physics", "mecanica", "eletromagnetismo"], "fisica"),
-            (["quimica", "chemistry"], "quimica"),
-            (["biologia", "biology", "genetica", "ecologia"], "biologia"),
-            (["medicina", "saude", "health", "anatomia", "enfermagem"], "medicina_saude"),
-            (["engenharia", "engineering"], "engenharia"),
-            (["culinaria", "gastronomia", "cooking", "receitas"], "culinaria"),
-            (["administracao", "negocios", "business", "gestao", "marketing"], "administracao_empresas"),
-            (["arquitetura", "architecture", "urbanismo"], "arquitetura"),
-            (["musica", "music"], "musica"),
-            (["cinema", "filme", "fotografia"], "cinema_teatro"),
-            (["esporte", "sports", "futebol", "volei", "educacao fisica"], "esportes"),
-            (["arte", "arts", "pintura", "escultura"], "artes"),
-            (["geografia", "geography", "viagens", "turismo"], "geografia_viagens"),
+            (["rio grande do sul", "gauch", "farroupilha", "serra gaucha", "porto alegre"], "historia_rs"),
+            (["historia do brasil", "brazil history", "brasil colonia", "brasil imperio", "ditadura militar", "escravidao no brasil"], "historia_brasil"),
+            (["historia antiga", "ancient history", "egito antigo", "mesopotamia", "antiguidade", "imperio romano", "grecia antiga"], "historia_antiga"),
+            (["historia da europa", "european history", "guerra mundial", "world war", "idade media", "medieval", "revolucao francesa", "holocausto"], "historia_europa"),
+            (["geografia do brasil", "territorio brasileiro", "regioes do brasil", "biomas brasileiros"], "geografia_brasil"),
+            (["autoajuda", "selfhelp", "self help", "desenvolvimento pessoal", "personal growth", "motivacional", "sucesso pessoal"], "autoajuda"),
+            (["espiritismo", "kardec", "espirita", "mediunidade", "chico xavier", "spiritualism"], "espiritismo"),
+            (["teologia", "biblia", "bible", "cristianismo", "christianity", "igreja", "evangelho", "catolicismo", "protestantismo", "jesus cristo"], "teologia_crista"),
+            (["folclore", "folklore", "lendas", "mitos populares", "cultura popular", "customs and traditions"], "folclore"),
+            (["programacao", "programming", "python", "javascript", "java", "software", "algoritmos", "algorithms", "coding", "desenvolvimento web", "engenharia de software", "banco de dados", "sql"], "programacao"),
+            (["computacao", "informatica", "computers", "computer science", "hardware", "redes de computadores", "inteligencia artificial", "sistemas operacionais", "tecnologia da informacao", "cybersecurity"], "computacao"),
+            (["administracao publica", "public administration", "gestao publica", "servico publico", "politicas publicas"], "administracao_publica"),
+            (["administracao", "negocios", "business", "gestao", "management", "marketing", "empreendedorismo", "entrepreneurship", "lideranca", "leadership", "recursos humanos", "vendas", "contabilidade"], "administracao_empresas"),
+            (["direito", "law", "legislacao", "juridic", "constituicao", "constitucional", "codigo civil", "codigo penal", "justica", "advocacia", "direitos humanos"], "direito"),
+            (["economia", "economics", "financas", "finance", "investimentos", "mercado financeiro", "macroeconomia", "microeconomia", "capitalismo"], "economia"),
+            (["politica", "ciencia politica", "politics", "political science", "democracia", "geopolitica", "relacoes internacionais", "estado", "governo"], "politica"),
+            (["sociologia", "sociology", "ciencias sociais", "social sciences", "antropologia", "anthropology", "sociedade", "movimentos sociais", "questao racial", "feminismo", "estudos de genero"], "sociologia"),
+            (["educacao", "pedagogia", "education", "ensino", "teaching", "didatica", "alfabetizacao", "escola", "aprendizagem", "curriculo"], "educacao"),
+            (["psicologia", "psychology", "psicanalise", "psychoanalysis", "saude mental", "terapia", "comportamento", "cognicao", "freud", "jung"], "psicologia"),
+            (["etica", "ethics", "moral", "bioetica", "filosofia moral"], "etica"),
+            (["filosofia", "philosophy", "metafisica", "epistemologia", "logica", "existencialismo", "estoicismo", "filosofos"], "filosofia"),
+            (["religiao", "religion", "mitologia", "mythology", "espiritualidade", "budismo", "islamismo", "judaismo", "umbanda", "candomble", "ocultismo"], "religiao"),
+            (["lingua portuguesa", "gramatica portuguesa", "ortografia", "redacao", "portuguese language", "dicionario portugues"], "lingua_portuguesa"),
+            (["lingua inglesa", "english language", "ingles para", "gramatica inglesa", "vocabulary"], "lingua_inglesa"),
+            (["linguistica", "linguistics", "semiotica", "fonetica", "morfologia", "sintaxe", "filologia", "language and languages"], "linguistica"),
+            (["matematica", "mathematics", "calculo", "calculus", "algebra", "geometria", "estatistica", "statistics", "probabilidade", "aritmetica"], "matematica"),
+            (["astronomia", "astronomy", "astrofisica", "astrophysics", "cosmologia", "universo", "sistema solar", "planetas"], "astronomia"),
+            (["fisica", "physics", "mecanica", "eletromagnetismo", "termodinamica", "fisica quantica", "relatividade", "optica"], "fisica"),
+            (["quimica", "chemistry", "bioquimica", "tabela periodica", "quimica organica", "quimica inorganica"], "quimica"),
+            (["botanica", "botany", "plantas", "plants", "flora", "fisiologia vegetal"], "botanica"),
+            (["zoologia", "zoology", "animais", "animals", "fauna", "vertebrados", "invertebrados", "etologia"], "zoologia"),
+            (["biologia", "biology", "genetica", "genetics", "ecologia", "ecology", "evolucao", "evolution", "microbiologia", "meio ambiente", "natureza", "sustentabilidade"], "biologia"),
+            (["ciencias", "science", "ciencias naturais", "divulgacao cientifica", "historia da ciencia", "metodo cientifico"], "ciencias"),
+            (["medicina", "saude", "health", "medical", "anatomia", "anatomy", "enfermagem", "nursing", "nutricao", "nutrition", "farmacologia", "psiquiatria", "pediatria", "fisioterapia", "odontologia"], "medicina_saude"),
+            (["engenharia", "engineering", "eletronica", "electronics", "mecanica industrial", "construcao civil", "automacao", "robotica", "telecomunicacoes"], "engenharia"),
+            (["agricultura", "agriculture", "agronomia", "pecuaria", "veterinaria", "horticultura", "jardinagem", "gardening", "silvicultura"], "agricultura"),
+            (["culinaria", "gastronomia", "cooking", "cookery", "receitas", "recipes", "confeitaria", "panificacao", "alimentacao", "vinhos"], "culinaria"),
+            (["arquitetura", "architecture", "urbanismo", "design de interiores", "paisagismo"], "arquitetura"),
+            (["musica", "music", "instrumentos musicais", "teoria musical", "composers", "compositores", "cancoes"], "musica"),
+            (["cinema", "filme", "movies", "motion pictures", "fotografia", "photography", "audiovisual", "direcao teatral", "artes cenicas", "performing arts"], "cinema_teatro"),
+            (["esporte", "esportes", "sports", "futebol", "soccer", "volei", "basquete", "educacao fisica", "atletismo", "artes marciais", "xadrez", "jogos", "recreacao"], "esportes"),
+            (["arte", "artes", "arts", "fine arts", "pintura", "painting", "escultura", "sculpture", "desenho", "drawing", "design", "historia da arte"], "artes"),
+            (["geografia", "geography", "viagens", "travel", "turismo", "cartografia", "atlas", "geopolitica"], "geografia_viagens"),
+            (["enciclopedia", "encyclopedia", "almanaque", "obras de referencia", "reference", "curiosidades gerais"], "enciclopedia"),
+            (["jornalismo", "journalism", "imprensa", "reportagem", "comunicacao social", "midia", "media studies"], "jornalismo"),
         ]
-        for palavras, cat in mapa_temas:
-            if any(p in texto_limpo for p in palavras):
-                resultado["categoria_principal"] = cat
+
+        # Biografia e História Geral têm tratamento especial para não colidir com romances ficcionais
+        if any(p in texto_nao_ficcao for p in ["biografia", "biography", "autobiografia", "autobiography", "memorias", "memoirs"]) and "critica" not in texto_nao_ficcao:
+            resultado["categoria_principal"] = "biografia"
+        elif not eh_literatura_explicita:
+            for palavras, cat in mapa_temas:
+                if any(p in texto_nao_ficcao for p in palavras):
+                    resultado["categoria_principal"] = cat
+                    break
+            if "categoria_principal" not in resultado and any(p in texto_nao_ficcao for p in ["historia", "history", "civilizacao", "arqueologia"]):
+                resultado["categoria_principal"] = "historia_geral"
+        else:
+            # Mesmo com marcador genérico de literatura, temas muito específicos prevalecem
+            temas_fortes = {"historia_rs", "historia_brasil", "autoajuda", "espiritismo", "folclore", "programacao", "computacao", "culinaria"}
+            for palavras, cat in mapa_temas:
+                if cat in temas_fortes and any(p in texto_nao_ficcao for p in palavras):
+                    resultado["categoria_principal"] = cat
+                    break
+
+    # 6. Classificação detalhada de Literatura (Gênero / Forma Literária e Subdivisão de Período)
+    if "categoria_principal" not in resultado or resultado.get("categoria_principal") == "literatura":
+        if any(k in texto_limpo for k in ["miscelanea", "miscellany", "fragmentos", "aforismos", "diarios", "diaries", "prosa poetica", "obras completas", "textos diversos", "desassossego"]):
+            resultado["categoria_principal"] = "literatura"
+            resultado["genero_literario"] = "miscelanea"
+        elif any(k in texto_limpo for k in ["critica literaria", "historia e critica", "history and criticism", "criticism and interpretation", "teoria literaria"]):
+            resultado["categoria_principal"] = "literatura"
+            resultado["genero_literario"] = "historia_critica"
+        elif any(k in texto_limpo for k in ["antologia", "anthology", "coletanea", "colecao literaria"]):
+            resultado["categoria_principal"] = "literatura"
+            resultado["genero_literario"] = "antologia_colecao"
+        elif any(k in texto_limpo for k in ["poesia", "poemas", "poetica", "poetry", "poems", "lirica", "sonetos", "haikai", "epopeia", "versos"]):
+            resultado["categoria_principal"] = "literatura"
+            resultado["genero_literario"] = "poesia"
+        elif any(k in texto_limpo for k in ["cronica", "cronicas", "ensaio", "ensaios", "essays"]):
+            resultado["categoria_principal"] = "literatura"
+            resultado["genero_literario"] = "cronica_ensaio"
+        elif any(k in texto_limpo for k in ["teatro", "drama", "peca teatral", "tragedia", "comedia teatral", "dramaturgia", "plays", "shakespeare"]):
+            resultado["categoria_principal"] = "literatura"
+            resultado["genero_literario"] = "teatro_drama"
+        elif any(k in texto_limpo for k in ["conto", "contos", "short stories", "novela", "novelas", "fabula", "fabulas"]):
+            resultado["categoria_principal"] = "literatura"
+            resultado["genero_literario"] = "conto_novela"
+        elif any(k in texto_limpo for k in ["humor", "satira", "piadas", "humorous", "satire", "comedia", "parodia"]):
+            resultado["categoria_principal"] = "literatura"
+            resultado["genero_literario"] = "humor_satira"
+        elif any(k in texto_limpo for k in ["cartas", "correspondencia", "epistolar", "letters"]):
+            resultado["categoria_principal"] = "literatura"
+            resultado["genero_literario"] = "cartas"
+        elif any(k in texto_limpo for k in ["discurso", "discursos", "oratoria", "speeches", "retorica"]):
+            resultado["categoria_principal"] = "literatura"
+            resultado["genero_literario"] = "discursos"
+        elif eh_literatura_explicita or any(k in texto_limpo for k in ["literatura", "literature"]):
+            resultado["categoria_principal"] = "literatura"
+            resultado["genero_literario"] = "romance_ficcao"
+
+    # 7. Inferência opcional de Período Literário (Subdivisão 1 a 9)
+    if resultado.get("categoria_principal") == "literatura":
+        mapa_periodos = [
+            (["seculo xxi", "21st century", "literatura contemporanea"], "9"),
+            (["contemporane", "pos modern", "postmodern", "2000"], "8"),
+            (["seculo xx", "20th century", "modernismo", "modernism"], "7"),
+            (["realismo", "naturalismo", "simbolismo", "parnasianismo"], "6"),
+            (["seculo xix", "19th century", "romantismo", "romanticism"], "5"),
+            (["seculo xviii", "18th century", "neoclassicismo", "arcadismo", "iluminismo"], "4"),
+            (["seculo xvii", "17th century", "barroco", "seiscentismo"], "3"),
+            (["seculo xvi", "16th century", "renascimento", "quinhentismo", "classicismo"], "2"),
+            (["idade media", "medieval", "trovadorismo", "origens"], "1"),
+        ]
+        for palavras_per, digito_per in mapa_periodos:
+            if any(p in texto_limpo for p in palavras_per):
+                resultado["subdivisao_literaria"] = digito_per
                 break
+
+    # 8. Complementa com o CDD Oficial da API (caso exista)
+    if cdd_oficial:
+        _inferir_por_cdd_oficial(cdd_oficial, resultado)
 
     return resultado

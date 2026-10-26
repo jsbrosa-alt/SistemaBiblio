@@ -1,14 +1,14 @@
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from fastapi.staticfiles import StaticFiles
 from database import engine, Base, get_db
-from models import Obra, Exemplar
+from models import Obra, Exemplar, CatalogoIsbnLocal
 from schemas import ObraCreateSchema
 from classificador import calcular_cdd_automatico, calcular_cutter_automatico, separar_nome_autor
 from PIL import Image
 from isbn_service import consultar_isbn_em_cascata, PASTA_CAPAS, baixar_e_converter_capa_webp
-import unicodedata
 import os
 import io
 
@@ -49,17 +49,80 @@ async def buscar_metadados_isbn(isbn: str, db: Session = Depends(get_db)):
             "ano_publicacao": existente.ano_publicacao,
             "paginas": existente.paginas,
             "capa_url": existente.capa_url,
+            "cdd_oficial": existente.cdd,
+            "cutter_sugerido": existente.cutter,
         }
 
-    # Etapas 1, 2 e 3: Cascata (BrasilAPI -> Google Books -> Open Library) + Conversão WebP
+    # Etapas 1, 2 e 3: Consulta TODAS as APIs (BrasilAPI + Open Library + Google Books) + Conversão WebP
     dados = await consultar_isbn_em_cascata(isbn_limpo)
-    if not dados:
-        raise HTTPException(
-            status_code=404,
-            detail="ISBN não encontrado na BrasilAPI, Google Books nem Open Library. Preencha manualmente."
-        )
+    catalogo_local = db.query(CatalogoIsbnLocal).filter(CatalogoIsbnLocal.isbn == isbn_limpo).first()
 
-    return {"ja_cadastrado": False, **dados}
+    if dados:
+        # Se algum campo ainda faltou nas APIs mas existe no catálogo local, complementa
+        if catalogo_local:
+            if not dados.get("autor_sobrenome") and catalogo_local.autor_completo and catalogo_local.autor_completo != "DESCONHECIDO":
+                sob, nom = separar_nome_autor(catalogo_local.autor_completo)
+                dados["autor_sobrenome"] = sob
+                dados["autor_nome"] = nom
+            if not dados.get("subtitulo") and catalogo_local.subtitulo:
+                dados["subtitulo"] = catalogo_local.subtitulo
+            if not dados.get("editora") and catalogo_local.editora:
+                dados["editora"] = catalogo_local.editora
+            if not dados.get("ano_publicacao") and catalogo_local.ano:
+                dados["ano_publicacao"] = catalogo_local.ano
+            if not dados.get("paginas") and catalogo_local.paginas:
+                dados["paginas"] = catalogo_local.paginas
+
+        # Alimenta/atualiza automaticamente o Catálogo Offline Local para futuras consultas sem internet
+        try:
+            autor_completo = f"{dados.get('autor_sobrenome', '')}, {dados.get('autor_nome', '')}".strip(", ") or "DESCONHECIDO"
+            novo_cache = CatalogoIsbnLocal(
+                isbn=isbn_limpo,
+                titulo=dados["titulo"],
+                subtitulo=dados.get("subtitulo") or None,
+                autor_completo=autor_completo,
+                editora=dados.get("editora") or None,
+                ano=dados.get("ano_publicacao"),
+                paginas=dados.get("paginas"),
+            )
+            db.merge(novo_cache)
+            db.commit()
+        except Exception:
+            db.rollback()
+
+        return {"ja_cadastrado": False, **dados}
+
+    # Fallback Offline: Se estiver sem internet ou não achar nas APIs, usa a tabela catalogo_isbn_local
+    if catalogo_local:
+        sobrenome, nome = separar_nome_autor(catalogo_local.autor_completo)
+        origem_padrao = "brasileira" if isbn_limpo.startswith(("97885", "97865", "85")) else "outras"
+        cdd_sugerido = calcular_cdd_automatico("livro", "literatura", "romance_ficcao", origem_padrao, "adulto")
+        cutter_sugerido = calcular_cutter_automatico(sobrenome, catalogo_local.titulo, "livro", nome)
+        caminho_capa_local = f"/static/capas/{isbn_limpo}.webp"
+        capa_local = caminho_capa_local if os.path.exists(os.path.join(PASTA_CAPAS, f"{isbn_limpo}.webp")) else None
+        return {
+            "ja_cadastrado": False,
+            "fonte": "Catálogo Offline Local",
+            "titulo": catalogo_local.titulo,
+            "subtitulo": catalogo_local.subtitulo,
+            "autor_sobrenome": sobrenome,
+            "autor_nome": nome,
+            "editora": catalogo_local.editora,
+            "ano_publicacao": catalogo_local.ano,
+            "paginas": catalogo_local.paginas,
+            "capa_url": capa_local,
+            "categoria_principal": "literatura",
+            "genero_literario": "romance_ficcao",
+            "origem_autor": origem_padrao,
+            "publico_alvo": "adulto",
+            "cdd_sugerido": cdd_sugerido,
+            "cutter_sugerido": cutter_sugerido,
+        }
+
+    raise HTTPException(
+        status_code=404,
+        detail="ISBN não encontrado na BrasilAPI, Google Books nem Open Library. Preencha manualmente."
+    )
 
 
 @app.post("/api/upload-capa")
@@ -83,21 +146,6 @@ async def upload_capa_manual(arquivo: UploadFile = File(...)):
         return {"capa_url": f"/static/capas/{nome_arquivo}"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Imagem inválida: {e}")
-
-def gerar_cutter_simplificado(sobrenome: str, titulo: str) -> str:
-    """Remove acentos e gera a estrutura base do Cutter (Ex: ASSIS + Dom Casmurro -> A848d)"""
-    limpo = ''.join(c for c in unicodedata.normalize('NFD', sobrenome) if unicodedata.category(c) != 'Mn')
-    letra_autor = limpo[0].upper()
-    
-    # Ignora artigos iniciais do título (Stopwords de biblioteconomia)
-    palavras = titulo.strip().split()
-    artigos = {"o", "a", "os", "as", "um", "uma", "de", "da", "do"}
-    primeira_palavra = palavras[1] if (len(palavras) > 1 and palavras[0].lower() in artigos) else palavras[0]
-    letra_titulo = primeira_palavra[0].lower()
-    
-    # (No próximo passo plugamos o dicionário completo da tabela Cutter-Sanborn aqui)
-    codigo_numerico = sum(ord(c) for c in limpo[:4]) % 900 + 100
-    return f"{letra_autor}{codigo_numerico}{letra_titulo}"
 
 
 @app.post("/api/obras", status_code=201)
@@ -155,12 +203,12 @@ def cadastrar_obra(dados: ObraCreateSchema, db: Session = Depends(get_db)):
     db.add(nova_obra)
     db.flush()  # Gera o ID da nova_obra antes de fechar a transação
 
-    # 5. Cria automaticamente os Exemplares Físicos (Números de Tombo)
-    total_atual = db.query(Exemplar).count()
+    # 5. Cria automaticamente os Exemplares Físicos (Números de Tombo sequenciais à prova de exclusões)
+    ultimo_id = db.query(func.max(Exemplar.id)).scalar() or 0
     tombos_gerados = []
     
     for i in range(1, dados.quantidade_exemplares + 1):
-        novo_tombo = f"AC-{(total_atual + i):05d}"
+        novo_tombo = f"TOMBO-{(ultimo_id + i):05d}"
         exemplar = Exemplar(
             obra_id=nova_obra.id,
             codigo_tombo=novo_tombo,
@@ -184,8 +232,8 @@ def cadastrar_obra(dados: ObraCreateSchema, db: Session = Depends(get_db)):
 
 @app.get("/api/classificar-preview")
 def preview_classificacao(
-    titulo: str,
-    autor_sobrenome: str,
+    titulo: str = "",
+    autor_sobrenome: str = "",
     autor_nome: str = "",
     tipo_acervo: str = "livro",
     subdivisao_literaria: str = "",
@@ -194,8 +242,18 @@ def preview_classificacao(
     origem_autor: str = "brasileira",
     publico_alvo: str = "adulto"
 ):
-    cdd = calcular_cdd_automatico(tipo_acervo, subdivisao_literaria, categoria_principal, genero_literario, origem_autor, publico_alvo)
-    cutter = calcular_cutter_automatico(autor_sobrenome, titulo, tipo_acervo)
+    cdd = calcular_cdd_automatico(
+        tipo_acervo,
+        categoria_principal,
+        genero_literario,
+        origem_autor,
+        publico_alvo,
+        subdivisao_literaria,
+    )
+    if titulo.strip() or autor_sobrenome.strip():
+        cutter = calcular_cutter_automatico(autor_sobrenome, titulo, tipo_acervo, autor_nome)
+    else:
+        cutter = "---"
     return {
         "cdd_gerado": cdd,
         "cutter_gerado": cutter,
